@@ -338,7 +338,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: "You are provided some user manuals for some products. Figure out for what product each manual is for, based on the cover page contents. DO NOT GUESS OR HALLUCINATE THE PRODUCT. Then, for each product, generate 4 short and practical example questions a user might ask about it in English. Return the questions as a JSON array of objects. Each object should have a 'product' key with the product name as a string, and a 'questions' key with an array of 4 question strings. For example: ```json[{\"product\": \"Product A\", \"questions\": [\"q1\", \"q2\"]}, {\"product\": \"Product B\", \"questions\": [\"q3\", \"q4\"]}]```",
+            contents: "You are provided national security and defense strategy documents from various countries. Analyze the cover pages to identify which country and what type of document each one is (e.g., Defense White Paper, National Security Strategy, etc.). DO NOT GUESS OR HALLUCINATE. Then, for each unique document type or country, generate 4 short and practical example questions a researcher might ask about defense and security policy. Return the questions as a JSON array of objects. Each object should have a 'document' key (e.g., 'Japan Defense Strategy 2022') and a 'questions' key with an array of 4 question strings. For example: ```json[{\"document\": \"Australia Defense White Paper 2016\", \"questions\": [\"What are the primary strategic challenges identified?\", \"How does the document address cyber security threats?\"]}, {\"document\": \"Germany National Security Strategy 2023\", \"questions\": [...]}]```",
             config: {
                 tools: [
                     {
@@ -371,7 +371,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
             const firstItem = parsedData[0];
 
-            // Handle new format: array of {product, questions[]}
+            // Handle new format: array of {document, questions[]} or {product, questions[]}
             if (typeof firstItem === 'object' && firstItem !== null && 'questions' in firstItem && Array.isArray(firstItem.questions)) {
                 return parsedData.flatMap(item => (item.questions || [])).filter(q => typeof q === 'string');
             }
