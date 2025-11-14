@@ -69,17 +69,63 @@ app.get('/api/rag-store/status', async (req, res) => {
         const stores = await geminiService.listRagStores();
         const currentStore = stores.find(s => s.name === ragStoreName);
 
+        // Get detailed info from local tracker
+        const trackedFiles = geminiService.getUploadedFilesList(ragStoreName);
+        const trackedCount = trackedFiles.length;
+
+        // Check for duplicates in the tracker
+        const fileSet = new Set(trackedFiles);
+        const hasDuplicates = fileSet.size !== trackedFiles.length;
+        const duplicateCount = trackedFiles.length - fileSet.size;
+
         res.json({
             storeName: ragStoreName,
             displayName: RAG_STORE_NAME,
             documentCount: parseInt(currentStore?.activeDocumentsCount || '0'),
+            trackedDocumentCount: trackedCount,
             sizeBytes: parseInt(currentStore?.sizeBytes || '0'),
             targetCount: 607,
-            percentComplete: Math.round((parseInt(currentStore?.activeDocumentsCount || '0') / 607) * 100),
-            isComplete: parseInt(currentStore?.activeDocumentsCount || '0') >= 607
+            percentComplete: Math.round((trackedCount / 607) * 100),
+            isComplete: trackedCount >= 607,
+            hasDuplicatesInTracker: hasDuplicates,
+            duplicateCountInTracker: duplicateCount,
+            uniqueFileCount: fileSet.size
         });
     } catch (error) {
         console.error('Error checking RAG store status:', error);
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
+// Verify uploaded files - check for duplicates and provide detailed report
+app.get('/api/rag-store/verify/:ragStoreName', async (req, res) => {
+    try {
+        const { ragStoreName } = req.params;
+
+        const trackedFiles = geminiService.getUploadedFilesList(ragStoreName);
+        const fileSet = new Set<string>();
+        const duplicates: string[] = [];
+
+        // Check for duplicates
+        for (const fileName of trackedFiles) {
+            if (fileSet.has(fileName)) {
+                duplicates.push(fileName);
+            } else {
+                fileSet.add(fileName);
+            }
+        }
+
+        res.json({
+            ragStoreName,
+            totalTrackedEntries: trackedFiles.length,
+            uniqueFiles: fileSet.size,
+            duplicateCount: duplicates.length,
+            duplicateFiles: duplicates,
+            hasDuplicates: duplicates.length > 0,
+            allFilenames: Array.from(fileSet).sort()
+        });
+    } catch (error) {
+        console.error('Error verifying RAG store:', error);
         res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
 });
