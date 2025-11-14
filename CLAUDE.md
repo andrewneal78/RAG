@@ -88,6 +88,11 @@ PORT=3001
   - Uses `gemini-2.5-flash` model for both queries and example question generation
   - Implements polling-based upload completion with 3-second delays
   - `uploadDirectoryToRagStore()`: Reads filesystem and uploads all supported documents
+  - Upload resilience features (improved to handle difficult files):
+    - 5 retry attempts with exponential backoff (2s → 32s)
+    - 6-minute timeout per file (120 poll attempts)
+    - 1.5-second rate limiting delay between uploads
+    - Progress logging for long-running uploads
   - Queries are augmented with instruction: "DO NOT ASK THE USER TO READ THE MANUAL, pinpoint the relevant sections in the response itself"
   - Supported formats: .txt, .pdf, .doc, .docx, .md, .html, .json
 
