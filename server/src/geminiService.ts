@@ -153,8 +153,8 @@ export async function uploadFileToRagStore(ragStoreName: string, filePath: strin
     if (!ai) throw new Error("Gemini AI not initialized");
 
     const fileName = path.basename(filePath);
-    const maxRetries = 3;
-    const baseDelay = 1000; // 1 second base delay for exponential backoff
+    const maxRetries = 5; // Increased from 3 to handle difficult files
+    const baseDelay = 2000; // Increased from 1s to 2s for better retry spacing
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
@@ -170,8 +170,8 @@ export async function uploadFileToRagStore(ragStoreName: string, filePath: strin
                 file: file
             });
 
-            // Poll for completion with timeout
-            const maxPollAttempts = 60; // 3 minutes max (60 * 3s)
+            // Poll for completion with extended timeout
+            const maxPollAttempts = 120; // Increased from 60 to 120 (6 minutes max)
             let pollAttempts = 0;
 
             while (!op.done) {
@@ -181,10 +181,15 @@ export async function uploadFileToRagStore(ragStoreName: string, filePath: strin
                 await delay(3000);
                 op = await ai.operations.get({operation: op});
                 pollAttempts++;
+
+                // Progress indicator for long uploads (every minute)
+                if (pollAttempts % 20 === 0) {
+                    console.log(`  Still processing ${fileName}... (${pollAttempts * 3}s elapsed)`);
+                }
             }
 
-            // Rate limiting: delay after successful upload
-            await delay(500);
+            // Rate limiting: increased delay after successful upload
+            await delay(1500); // Increased from 500ms to 1500ms
             return; // Success - exit retry loop
 
         } catch (error) {
