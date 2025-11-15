@@ -14,6 +14,7 @@ interface GroundingChunk {
         title?: string;
     };
     metadata?: DocumentMetadata;
+    fileName?: string;
 }
 
 interface QueryResult {
@@ -384,8 +385,11 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
             fileName = chunk.retrievedContext.title;
         }
 
-        // Look up metadata if we have a filename
+        // Store the filename in the chunk
         if (fileName) {
+            enrichedChunk.fileName = fileName;
+
+            // Look up metadata if we have a filename
             const metadata = getMetadataForFile(fileName);
             if (metadata) {
                 enrichedChunk.metadata = metadata;

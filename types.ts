@@ -44,6 +44,7 @@ export interface GroundingChunk {
         title?: string;
     };
     metadata?: DocumentMetadata;
+    fileName?: string;
 }
 
 export interface QueryResult {

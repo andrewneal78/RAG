@@ -182,12 +182,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documentName, history, is
                                         <div className="flex flex-wrap gap-2 justify-end">
                                             {message.groundingChunks.map((chunk, chunkIndex) => {
                                                 const metadata = chunk.metadata;
+                                                const fileName = chunk.fileName || 'Unknown file';
                                                 const label = metadata
                                                     ? `${metadata.country} ${metadata.year} (${metadata.documentType})`
                                                     : `Source ${chunkIndex + 1}`;
                                                 const title = metadata
-                                                    ? `${metadata.documentName}\n${metadata.country} - ${metadata.year}\nType: ${metadata.documentType}`
-                                                    : "View source document chunk";
+                                                    ? `File: ${fileName}\n${metadata.documentName}\n${metadata.country} - ${metadata.year}\nType: ${metadata.documentType}`
+                                                    : `File: ${fileName}\nView source document chunk`;
 
                                                 return chunk.retrievedContext?.text && (
                                                     <button
@@ -257,6 +258,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ documentName, history, is
                 >
                     <div className="bg-gem-slate p-6 rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
                         <h3 id="source-modal-title" className="text-xl font-bold mb-3">Source Document</h3>
+
+                        {modalChunk.fileName && (
+                            <div className="bg-gem-blue/20 p-3 rounded-md mb-3 border border-gem-blue/30">
+                                <span className="text-gem-offwhite/60 font-semibold text-xs">Filename:</span>
+                                <p className="text-gem-offwhite font-mono text-sm break-all">{modalChunk.fileName}</p>
+                            </div>
+                        )}
 
                         {modalChunk.metadata && (
                             <div className="bg-gem-mist/30 p-4 rounded-md mb-4 space-y-2 text-sm">
