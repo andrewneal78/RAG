@@ -149,6 +149,16 @@ export async function listDocumentsInRagStore(ragStoreName: string): Promise<Set
     return new Set(uploadedFiles);
 }
 
+export function getUploadedFilesCount(ragStoreName: string): number {
+    const tracker = loadUploadTracker();
+    return tracker[ragStoreName]?.uploadedFiles?.length || 0;
+}
+
+export function getUploadedFilesList(ragStoreName: string): string[] {
+    const tracker = loadUploadTracker();
+    return tracker[ragStoreName]?.uploadedFiles || [];
+}
+
 export async function uploadFileToRagStore(ragStoreName: string, filePath: string, onProgress?: (fileName: string) => void): Promise<void> {
     if (!ai) throw new Error("Gemini AI not initialized");
 
@@ -222,42 +232,79 @@ export async function uploadDirectoryToRagStore(
     if (!ai) throw new Error("Gemini AI not initialized");
 
     // Read all files from directory
-    const allFiles = fs.readdirSync(directoryPath)
+    const allFilesArray = fs.readdirSync(directoryPath)
         .filter(file => {
             const ext = path.extname(file).toLowerCase();
             // Support common document formats
             return ['.txt', '.pdf', '.doc', '.docx', '.md', '.html', '.json'].includes(ext);
         });
 
-    if (allFiles.length === 0) {
+    if (allFilesArray.length === 0) {
         throw new Error(`No supported documents found in ${directoryPath}`);
     }
 
+    // CRITICAL: Deduplicate filenames within the directory
+    // Use Map to track first occurrence of each filename
+    const uniqueFilesMap = new Map<string, string>();
+    const duplicatesInDirectory: string[] = [];
+
+    for (const fileName of allFilesArray) {
+        if (uniqueFilesMap.has(fileName)) {
+            duplicatesInDirectory.push(fileName);
+            console.warn(`⚠️  Duplicate filename found in directory: ${fileName} - will be uploaded only once`);
+        } else {
+            uniqueFilesMap.set(fileName, fileName);
+        }
+    }
+
+    // Use only unique filenames for upload
+    const allFiles = Array.from(uniqueFilesMap.keys());
+
+    console.log(`Found ${allFilesArray.length} total files, ${allFiles.length} unique filenames`);
+    if (duplicatesInDirectory.length > 0) {
+        console.warn(`Detected ${duplicatesInDirectory.length} duplicate filename(s) in directory - these will be skipped to prevent duplicate uploads`);
+    }
+
     let filesToUpload = allFiles;
-    const skipped: string[] = [];
+    const skipped: string[] = [...duplicatesInDirectory]; // Start with in-directory duplicates
 
     // In resume mode, skip files that are already uploaded
     if (resumeMode) {
         console.log('Resume mode: checking for already uploaded documents...');
         const uploadedFiles = await listDocumentsInRagStore(ragStoreName);
 
+        const alreadyUploaded: string[] = [];
         filesToUpload = allFiles.filter(fileName => {
             if (uploadedFiles.has(fileName)) {
+                alreadyUploaded.push(fileName);
                 skipped.push(fileName);
                 return false;
             }
             return true;
         });
 
-        console.log(`Resume mode: ${skipped.length} files already uploaded, ${filesToUpload.length} remaining`);
+        console.log(`Resume mode: ${alreadyUploaded.length} files already uploaded (skipped), ${filesToUpload.length} remaining to upload`);
     }
 
     const successful: string[] = [];
     const failed: Array<{ fileName: string; error: string }> = [];
+    const uploadedInSession = new Set<string>(); // Track what we upload in THIS session to prevent in-session duplicates
+
+    console.log(`\n📤 Starting upload: ${filesToUpload.length} files to process`);
+    console.log(`   Skipped (duplicates/already uploaded): ${skipped.length}`);
+    console.log(`   Total unique files in directory: ${allFiles.length}`);
 
     // Upload each file, continuing even if individual files fail
     for (let i = 0; i < filesToUpload.length; i++) {
         const fileName = filesToUpload[i];
+
+        // Safety check: ensure we don't upload the same file twice in this session
+        if (uploadedInSession.has(fileName)) {
+            console.warn(`⚠️  DUPLICATE DETECTED: ${fileName} already uploaded in this session - skipping`);
+            skipped.push(fileName);
+            continue;
+        }
+
         const filePath = path.join(directoryPath, fileName);
 
         try {
@@ -266,22 +313,38 @@ export async function uploadDirectoryToRagStore(
             }
             await uploadFileToRagStore(ragStoreName, filePath);
             addUploadedFile(ragStoreName, fileName); // Track successful upload
+            uploadedInSession.add(fileName); // Mark as uploaded in this session
             successful.push(fileName);
-            console.log(`✓ Successfully uploaded ${fileName} (${i + 1}/${filesToUpload.length})`);
+            console.log(`✓ [${i + 1}/${filesToUpload.length}] Successfully uploaded: ${fileName}`);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             failed.push({ fileName, error: errorMessage });
-            console.error(`✗ Failed to upload ${fileName}: ${errorMessage}`);
+            console.error(`✗ [${i + 1}/${filesToUpload.length}] Failed to upload ${fileName}: ${errorMessage}`);
             // Continue with next file instead of aborting
         }
     }
 
-    const totalFiles = resumeMode ? filesToUpload.length : allFiles.length;
-    console.log(`\nUpload complete: ${successful.length} successful, ${failed.length} failed, ${skipped.length} skipped out of ${allFiles.length} total files`);
+    console.log(`\n✅ Upload Summary:`);
+    console.log(`   ✓ Successful: ${successful.length}`);
+    console.log(`   ✗ Failed: ${failed.length}`);
+    console.log(`   ⊘ Skipped: ${skipped.length}`);
+    console.log(`   📁 Total files in directory: ${allFilesArray.length}`);
+    console.log(`   🎯 Unique filenames: ${allFiles.length}`);
 
     if (failed.length > 0) {
-        console.warn('\nFailed files:');
+        console.warn('\n❌ Failed files:');
         failed.forEach(f => console.warn(`  - ${f.fileName}: ${f.error}`));
+    }
+
+    if (skipped.length > 0) {
+        console.log(`\n⊘ Skipped files (${skipped.length} total):`);
+        if (duplicatesInDirectory.length > 0) {
+            console.log(`  - ${duplicatesInDirectory.length} duplicate filename(s) in directory`);
+        }
+        const alreadyUploadedCount = skipped.length - duplicatesInDirectory.length;
+        if (alreadyUploadedCount > 0) {
+            console.log(`  - ${alreadyUploadedCount} already uploaded (resume mode)`);
+        }
     }
 
     return { successful, failed, skipped };
@@ -333,7 +396,7 @@ export async function fileSearch(ragStoreName: string, query: string): Promise<Q
     });
 
     return {
-        text: response.text,
+        text: response.text || '',
         groundingChunks: enrichedChunks,
     };
 }
@@ -355,7 +418,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
 
-        let jsonText = response.text.trim();
+        let jsonText = (response.text || '').trim();
 
         const jsonMatch = jsonText.match(/```json\n([\s\S]*?)\n```/);
         if (jsonMatch && jsonMatch[1]) {
