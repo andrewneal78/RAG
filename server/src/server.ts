@@ -300,6 +300,119 @@ app.delete('/api/rag-store/:ragStoreName', async (req, res) => {
     }
 });
 
+// ============ DEBUG ENDPOINTS ============
+
+// List ALL RAG stores in the account
+app.get('/api/debug/all-rag-stores', async (req, res) => {
+    try {
+        const stores = await geminiService.listRagStores();
+
+        const storeDetails = stores.map(store => ({
+            name: store.name,
+            displayName: store.displayName,
+            documentCount: parseInt(store.activeDocumentsCount || '0'),
+            sizeBytes: parseInt(store.sizeBytes || '0'),
+            createTime: store.createTime,
+            updateTime: store.updateTime
+        }));
+
+        // Group by displayName
+        const grouped: { [key: string]: any[] } = {};
+        storeDetails.forEach(store => {
+            const displayName = store.displayName || 'unnamed';
+            if (!grouped[displayName]) {
+                grouped[displayName] = [];
+            }
+            grouped[displayName].push(store);
+        });
+
+        // Find duplicates
+        const duplicates = Object.entries(grouped).filter(([_, stores]) => stores.length > 1);
+
+        res.json({
+            totalStores: stores.length,
+            stores: storeDetails,
+            groupedByDisplayName: grouped,
+            duplicateDisplayNames: duplicates.length > 0 ? Object.fromEntries(duplicates) : null,
+            hasDuplicates: duplicates.length > 0,
+            duplicateCount: duplicates.length
+        });
+    } catch (error) {
+        console.error('Error listing all RAG stores:', error);
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
+// Show upload tracker contents
+app.get('/api/debug/upload-tracker', async (req, res) => {
+    try {
+        const tracker = geminiService.getUploadTrackerContents();
+
+        const analysis: { [ragStoreName: string]: any } = {};
+
+        for (const [ragStoreName, data] of Object.entries(tracker)) {
+            const files = data.uploadedFiles || [];
+            const uniqueFiles = new Set(files);
+            const duplicates: string[] = [];
+
+            const seen = new Set<string>();
+            files.forEach(file => {
+                if (seen.has(file)) {
+                    if (!duplicates.includes(file)) {
+                        duplicates.push(file);
+                    }
+                } else {
+                    seen.add(file);
+                }
+            });
+
+            analysis[ragStoreName] = {
+                totalEntries: files.length,
+                uniqueFiles: uniqueFiles.size,
+                hasDuplicates: duplicates.length > 0,
+                duplicateCount: duplicates.length,
+                duplicateFiles: duplicates,
+                lastUpdate: data.lastUpdate
+            };
+        }
+
+        res.json({
+            tracker,
+            analysis
+        });
+    } catch (error) {
+        console.error('Error reading upload tracker:', error);
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
+// Clean up duplicate RAG stores (keeps only the most recent one per displayName)
+app.post('/api/debug/cleanup-duplicate-stores', async (req, res) => {
+    try {
+        const result = await geminiService.cleanupDuplicateStores(RAG_STORE_NAME);
+        res.json(result);
+    } catch (error) {
+        console.error('Error cleaning up duplicate stores:', error);
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
+// Fix upload tracker duplicates
+app.post('/api/debug/fix-tracker-duplicates', async (req, res) => {
+    try {
+        const { ragStoreName } = req.body;
+        if (!ragStoreName) {
+            return res.status(400).json({ error: 'ragStoreName is required' });
+        }
+
+        const result = geminiService.deduplicateTrackerEntries(ragStoreName);
+        res.json(result);
+    } catch (error) {
+        console.error('Error fixing tracker duplicates:', error);
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });

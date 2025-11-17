@@ -82,16 +82,49 @@ export async function getOrCreateRagStore(displayName: string): Promise<{ ragSto
     if (!ai) throw new Error("Gemini AI not initialized");
 
     // Check if store already exists
-    const existingStoreName = await getRagStoreByDisplayName(displayName);
-    if (existingStoreName) {
-        console.log(`Found existing RAG store: ${existingStoreName}`);
-        return { ragStoreName: existingStoreName, isNew: false };
+    const stores = await listRagStores();
+    const matchingStores = stores.filter(s => s.displayName === displayName);
+
+    if (matchingStores.length === 0) {
+        // No store exists - create new one
+        console.log(`Creating new RAG store: ${displayName}`);
+        const ragStoreName = await createRagStore(displayName);
+        return { ragStoreName, isNew: true };
     }
 
-    // Create new store
-    console.log(`Creating new RAG store: ${displayName}`);
-    const ragStoreName = await createRagStore(displayName);
-    return { ragStoreName, isNew: true };
+    if (matchingStores.length === 1) {
+        // Exactly one store exists - use it
+        console.log(`Found existing RAG store: ${matchingStores[0].name}`);
+        return { ragStoreName: matchingStores[0].name, isNew: false };
+    }
+
+    // Multiple stores exist with same displayName - CLEAN UP DUPLICATES
+    console.warn(`⚠️  Found ${matchingStores.length} RAG stores with displayName "${displayName}" - cleaning up duplicates!`);
+
+    // Keep the one with most documents (most recent upload)
+    const storeToKeep = matchingStores.reduce((best, current) => {
+        const bestCount = parseInt(best.activeDocumentsCount || '0');
+        const currentCount = parseInt(current.activeDocumentsCount || '0');
+        return currentCount > bestCount ? current : best;
+    });
+
+    console.log(`Keeping: ${storeToKeep.name} (${storeToKeep.activeDocumentsCount || 0} documents)`);
+
+    // Delete all other stores
+    const storesToDelete = matchingStores.filter(s => s.name !== storeToKeep.name);
+    console.log(`Deleting ${storesToDelete.length} duplicate store(s)...`);
+
+    for (const store of storesToDelete) {
+        try {
+            console.log(`  Deleting duplicate: ${store.name} (${store.activeDocumentsCount || 0} documents)`);
+            await deleteRagStore(store.name);
+        } catch (error) {
+            console.error(`  Failed to delete duplicate ${store.name}:`, error);
+        }
+    }
+
+    console.log(`✅ Cleanup complete. Using: ${storeToKeep.name}`);
+    return { ragStoreName: storeToKeep.name, isNew: false };
 }
 
 // Track uploaded files locally since the SDK doesn't support listing documents
@@ -129,10 +162,14 @@ function addUploadedFile(ragStoreName: string, fileName: string): void {
     if (!tracker[ragStoreName]) {
         tracker[ragStoreName] = { uploadedFiles: [], lastUpdate: new Date().toISOString() };
     }
+
+    // CRITICAL: Check for duplicates before adding
     if (!tracker[ragStoreName].uploadedFiles.includes(fileName)) {
         tracker[ragStoreName].uploadedFiles.push(fileName);
         tracker[ragStoreName].lastUpdate = new Date().toISOString();
         saveUploadTracker(tracker);
+    } else {
+        console.warn(`⚠️  Attempted to add duplicate file to tracker: ${fileName} (already exists in ${ragStoreName})`);
     }
 }
 
@@ -146,8 +183,20 @@ export async function listDocumentsInRagStore(ragStoreName: string): Promise<Set
     // Use local tracker since SDK doesn't support listing documents
     const tracker = loadUploadTracker();
     const uploadedFiles = tracker[ragStoreName]?.uploadedFiles || [];
-    console.log(`Found ${uploadedFiles.length} documents in local tracker for ${ragStoreName}`);
-    return new Set(uploadedFiles);
+
+    // Proactively check for duplicates and fix if found
+    const uniqueFiles = new Set(uploadedFiles);
+    if (uniqueFiles.size !== uploadedFiles.length) {
+        const duplicateCount = uploadedFiles.length - uniqueFiles.size;
+        console.warn(`⚠️  Found ${duplicateCount} duplicate(s) in tracker for ${ragStoreName} - auto-fixing...`);
+        tracker[ragStoreName].uploadedFiles = Array.from(uniqueFiles);
+        tracker[ragStoreName].lastUpdate = new Date().toISOString();
+        saveUploadTracker(tracker);
+        console.log(`✅ Tracker cleaned: ${uploadedFiles.length} → ${uniqueFiles.size} entries`);
+    }
+
+    console.log(`Found ${uniqueFiles.size} unique documents in local tracker for ${ragStoreName}`);
+    return uniqueFiles;
 }
 
 export function getUploadedFilesCount(ragStoreName: string): number {
@@ -470,6 +519,93 @@ export async function deleteRagStore(ragStoreName: string): Promise<void> {
     });
     // Clear the upload tracker for this store
     clearUploadTracker(ragStoreName);
+}
+
+// ============ DEBUG AND MAINTENANCE FUNCTIONS ============
+
+export function getUploadTrackerContents(): UploadTracker {
+    return loadUploadTracker();
+}
+
+export function deduplicateTrackerEntries(ragStoreName: string): { before: number; after: number; duplicatesRemoved: number } {
+    const tracker = loadUploadTracker();
+
+    if (!tracker[ragStoreName]) {
+        return { before: 0, after: 0, duplicatesRemoved: 0 };
+    }
+
+    const beforeCount = tracker[ragStoreName].uploadedFiles.length;
+    const uniqueFiles = Array.from(new Set(tracker[ragStoreName].uploadedFiles));
+    const afterCount = uniqueFiles.length;
+
+    tracker[ragStoreName].uploadedFiles = uniqueFiles;
+    tracker[ragStoreName].lastUpdate = new Date().toISOString();
+    saveUploadTracker(tracker);
+
+    console.log(`Deduplicated tracker for ${ragStoreName}: ${beforeCount} → ${afterCount} (removed ${beforeCount - afterCount} duplicates)`);
+
+    return {
+        before: beforeCount,
+        after: afterCount,
+        duplicatesRemoved: beforeCount - afterCount
+    };
+}
+
+export async function cleanupDuplicateStores(displayName: string): Promise<{
+    found: number;
+    deleted: number;
+    kept: string | null;
+    deletedStores: string[];
+}> {
+    if (!ai) throw new Error("Gemini AI not initialized");
+
+    const stores = await listRagStores();
+    const matchingStores = stores.filter(s => s.displayName === displayName);
+
+    if (matchingStores.length <= 1) {
+        console.log(`No duplicate stores found for displayName: "${displayName}"`);
+        return {
+            found: matchingStores.length,
+            deleted: 0,
+            kept: matchingStores[0]?.name || null,
+            deletedStores: []
+        };
+    }
+
+    console.log(`Found ${matchingStores.length} stores with displayName "${displayName}" - cleaning up duplicates...`);
+
+    // Keep the one with most documents (most recent upload)
+    const storeToKeep = matchingStores.reduce((best, current) => {
+        const bestCount = parseInt(best.activeDocumentsCount || '0');
+        const currentCount = parseInt(current.activeDocumentsCount || '0');
+        return currentCount > bestCount ? current : best;
+    });
+
+    const storesToDelete = matchingStores.filter(s => s.name !== storeToKeep.name);
+
+    console.log(`Keeping: ${storeToKeep.name} (${storeToKeep.activeDocumentsCount || 0} documents)`);
+    console.log(`Deleting ${storesToDelete.length} duplicate store(s)...`);
+
+    const deletedStores: string[] = [];
+
+    for (const store of storesToDelete) {
+        try {
+            console.log(`  Deleting: ${store.name} (${store.activeDocumentsCount || 0} documents)`);
+            await deleteRagStore(store.name);
+            deletedStores.push(store.name);
+        } catch (error) {
+            console.error(`  Failed to delete ${store.name}:`, error);
+        }
+    }
+
+    console.log(`Cleanup complete. Kept: ${storeToKeep.name}, Deleted: ${deletedStores.length}`);
+
+    return {
+        found: matchingStores.length,
+        deleted: deletedStores.length,
+        kept: storeToKeep.name,
+        deletedStores
+    };
 }
 
 function getContentType(filePath: string): string {
